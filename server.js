@@ -24,7 +24,11 @@ const pool = new Pool({
 });
 
 app.set('trust proxy', 1);
-app.use(cors({ origin: true, methods: ['GET','POST','PUT','OPTIONS'], allowedHeaders: ['Content-Type','Authorization','X-Admin-Key'] }));
+app.use(cors({
+  origin: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Admin-Key']
+}));
 app.use(express.json({ limit: '1mb' }));
 app.use('/admin', express.static(new URL('./public', import.meta.url).pathname));
 
@@ -150,39 +154,103 @@ app.put('/api/me', auth, async (req, res) => {
   }
 });
 
+// Elimina permanentemente la cuenta y todo lo almacenado en su perfil.
+app.delete('/api/me', auth, async (req, res) => {
+  try {
+    const result = await pool.query('DELETE FROM users WHERE id = $1 RETURNING id, username', [req.user.id]);
+    if (!result.rows[0]) return res.status(404).json({ error: 'Cuenta no encontrada.' });
+    return res.json({
+      ok: true,
+      message: 'Cuenta y todos sus datos eliminados correctamente.'
+    });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: 'No se pudo eliminar la cuenta.' });
+  }
+});
+
+function normalizeCourse(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
+function courseMatches(value, course) {
+  const a = normalizeCourse(value);
+  const b = normalizeCourse(course);
+  if (!a || !b) return false;
+  return a === b || a.startsWith(b + ' (') || a.startsWith(b + '|') || a.startsWith(b + ' -') || a.startsWith(b + ' —');
+}
+
+function addResult(ranking, row, p, correct, answered) {
+  ranking.push({
+    username: row.username,
+    nombre: p.nombre || row.username,
+    avatar: p.avatar || '',
+    nivel: Number(p.nivel) || 1,
+    xp: Number(p.xp) || 0,
+    correctas: correct,
+    respondidas: answered
+  });
+}
+
 function rankingForCourse(course, users) {
   const ranking = [];
+
   for (const row of users) {
     const p = parseProfile(row.profile_json);
-    let correct = 0, answered = 0;
-    for (const reg of (Array.isArray(p.registrosGeneral) ? p.registrosGeneral : [])) {
-      if (String(reg.cursoNivel || '').toLowerCase().startsWith(String(course).toLowerCase() + ' (')) {
-        answered++;
-        if (reg.estado === 'Correcto') correct++;
+    let correct = 0;
+    let answered = 0;
+
+    const registros = Array.isArray(p.registrosGeneral) ? p.registrosGeneral : [];
+    for (const reg of registros) {
+      if (!courseMatches(reg?.cursoNivel, course) && !courseMatches(reg?.curso, course)) continue;
+      answered++;
+      const estado = normalizeCourse(reg?.estado);
+      if (estado === 'correcto' || reg?.correct === true || reg?.correcto === true) correct++;
+    }
+
+    const progresoCursos = p.progresoCursos && typeof p.progresoCursos === 'object' ? p.progresoCursos : {};
+    for (const key of Object.keys(progresoCursos)) {
+      if (!courseMatches(key, course)) continue;
+      const item = progresoCursos[key] || {};
+      const resultados = Array.isArray(item.resultados) ? item.resultados : [];
+      const boolResults = resultados.filter(x => x === true || x === false);
+      if (boolResults.length) {
+        answered += boolResults.length;
+        correct += boolResults.filter(x => x === true).length;
       }
     }
-    if (answered === 0 && p.progresoCursos) {
-      for (const key of Object.keys(p.progresoCursos)) {
-        if (!key.toLowerCase().startsWith(String(course).toLowerCase() + '|')) continue;
-        const r = p.progresoCursos[key]?.resultados;
-        if (Array.isArray(r)) {
-          answered += r.filter(x => x === true || x === false).length;
-          correct += r.filter(x => x === true).length;
-        }
-      }
-    }
-    ranking.push({ username: row.username, nombre: p.nombre || row.username, avatar: p.avatar || '', nivel: Number(p.nivel) || 1, xp: Number(p.xp) || 0, correctas: correct, respondidas: answered });
+
+    addResult(ranking, row, p, correct, answered);
   }
-  ranking.sort((a,b) => b.correctas-a.correctas || b.respondidas-a.respondidas || b.xp-a.xp || a.username.localeCompare(b.username));
-  return ranking.slice(0, 50).map((x,i) => ({ posicion:i+1, ...x }));
+
+  ranking.sort((a, b) =>
+    b.correctas - a.correctas ||
+    b.respondidas - a.respondidas ||
+    b.xp - a.xp ||
+    a.username.localeCompare(b.username)
+  );
+
+  return ranking.slice(0, 50).map((x, i) => ({ posicion: i + 1, ...x }));
 }
 
 app.get('/api/rankings', async (req, res) => {
   try {
     const course = cleanUsername(req.query.course);
     if (!course) return res.status(400).json({ error: 'Falta course.' });
+
     const { rows } = await pool.query('SELECT username, profile_json FROM users');
-    res.json({ course, ranking: rankingForCourse(course, rows) });
+    const ranking = rankingForCourse(course, rows);
+
+    res.json({
+      ok: true,
+      course,
+      totalUsuarios: ranking.length,
+      ranking
+    });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: 'No se pudo cargar el ranking.' });
