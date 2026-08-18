@@ -35,9 +35,15 @@ app.use('/admin', express.static(new URL('./public', import.meta.url).pathname))
 function cleanUsername(value) {
   return String(value || '').trim().replace(/\s+/g, ' ');
 }
-function validUsername(value) { return /^[A-Za-zÁÉÍÓÚáéíóúÑñ0-9_. -]{3,30}$/.test(value); }
-function validPassword(value) { return typeof value === 'string' && value.length >= 6 && value.length <= 100; }
-function signToken(user) { return jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: '30d' }); }
+function validUsername(value) {
+  return /^[A-Za-zÁÉÍÓÚáéíóúÑñ0-9_. -]{3,30}$/.test(value);
+}
+function validPassword(value) {
+  return typeof value === 'string' && value.length >= 6 && value.length <= 100;
+}
+function signToken(user) {
+  return jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: '30d' });
+}
 function publicProfile(profile, username) {
   return {
     username,
@@ -46,6 +52,9 @@ function publicProfile(profile, username) {
     nivel: Number(profile?.nivel) || 1,
     xp: Number(profile?.xp) || 0,
     monedas: Number(profile?.monedas) || 0,
+    habilidades: profile?.habilidades && typeof profile.habilidades === 'object'
+      ? profile.habilidades
+      : { pista: 0, reintento: 0, salto: 0 },
     progresoCursos: profile?.progresoCursos || {},
     registrosGeneral: Array.isArray(profile?.registrosGeneral) ? profile.registrosGeneral : []
   };
@@ -57,7 +66,10 @@ function parseProfile(value) {
 }
 
 async function getUserById(id) {
-  const { rows } = await pool.query('SELECT id, username, profile_json, password_hash FROM users WHERE id = $1', [id]);
+  const { rows } = await pool.query(
+    'SELECT id, username, profile_json, password_hash FROM users WHERE id = $1',
+    [id]
+  );
   if (!rows[0]) return null;
   return { ...rows[0], profile: parseProfile(rows[0].profile_json) };
 }
@@ -116,8 +128,15 @@ app.post('/api/register', async (req, res) => {
       'INSERT INTO users (username,password_hash,profile_json) VALUES ($1,$2,$3::jsonb) RETURNING id, username, profile_json',
       [username, hash, JSON.stringify(safeProfile)]
     );
-    const user = { id: result.rows[0].id, username: result.rows[0].username, profile: parseProfile(result.rows[0].profile_json) };
-    return res.status(201).json({ token: signToken(user), profile: publicProfile(user.profile, user.username) });
+    const user = {
+      id: result.rows[0].id,
+      username: result.rows[0].username,
+      profile: parseProfile(result.rows[0].profile_json)
+    };
+    return res.status(201).json({
+      token: signToken(user),
+      profile: publicProfile(user.profile, user.username)
+    });
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: 'No se pudo crear la cuenta.' });
@@ -128,25 +147,40 @@ app.post('/api/login', async (req, res) => {
   try {
     const username = cleanUsername(req.body?.username);
     const password = String(req.body?.password || '');
-    const { rows } = await pool.query('SELECT id, username, password_hash, profile_json FROM users WHERE LOWER(username) = LOWER($1)', [username]);
+    const { rows } = await pool.query(
+      'SELECT id, username, password_hash, profile_json FROM users WHERE LOWER(username) = LOWER($1)',
+      [username]
+    );
     const row = rows[0];
-    if (!row || !(await bcrypt.compare(password, row.password_hash))) return res.status(401).json({ error: 'Usuario o contraseña incorrectos.' });
+    if (!row || !(await bcrypt.compare(password, row.password_hash))) {
+      return res.status(401).json({ error: 'Usuario o contraseña incorrectos.' });
+    }
     const user = { id: row.id, username: row.username, profile: parseProfile(row.profile_json) };
-    return res.json({ token: signToken(user), profile: publicProfile(user.profile, user.username) });
+    return res.json({
+      token: signToken(user),
+      profile: publicProfile(user.profile, user.username)
+    });
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: 'No se pudo iniciar sesión.' });
   }
 });
 
-app.get('/api/me', auth, (req, res) => res.json({ profile: publicProfile(req.user.profile, req.user.username) }));
+app.get('/api/me', auth, (req, res) => {
+  res.json({ profile: publicProfile(req.user.profile, req.user.username) });
+});
 
 app.put('/api/me', auth, async (req, res) => {
   try {
     const incoming = req.body?.profile;
-    if (!incoming || typeof incoming !== 'object') return res.status(400).json({ error: 'Perfil inválido.' });
+    if (!incoming || typeof incoming !== 'object') {
+      return res.status(400).json({ error: 'Perfil inválido.' });
+    }
     const profile = publicProfile(incoming, req.user.username);
-    await pool.query('UPDATE users SET profile_json = $1::jsonb, updated_at = NOW() WHERE id = $2', [JSON.stringify(profile), req.user.id]);
+    await pool.query(
+      'UPDATE users SET profile_json = $1::jsonb, updated_at = NOW() WHERE id = $2',
+      [JSON.stringify(profile), req.user.id]
+    );
     return res.json({ ok: true, profile });
   } catch (e) {
     console.error(e);
@@ -157,7 +191,10 @@ app.put('/api/me', auth, async (req, res) => {
 // Elimina permanentemente la cuenta y todo lo almacenado en su perfil.
 app.delete('/api/me', auth, async (req, res) => {
   try {
-    const result = await pool.query('DELETE FROM users WHERE id = $1 RETURNING id, username', [req.user.id]);
+    const result = await pool.query(
+      'DELETE FROM users WHERE id = $1 RETURNING id, username',
+      [req.user.id]
+    );
     if (!result.rows[0]) return res.status(404).json({ error: 'Cuenta no encontrada.' });
     return res.json({
       ok: true,
@@ -184,47 +221,55 @@ function courseMatches(value, course) {
   return a === b || a.startsWith(b + ' (') || a.startsWith(b + '|') || a.startsWith(b + ' -') || a.startsWith(b + ' —');
 }
 
-function addResult(ranking, row, p, correct, answered) {
-  ranking.push({
+function buildRankingEntry(row, profile, correct, answered) {
+  return {
     username: row.username,
-    nombre: p.nombre || row.username,
-    avatar: p.avatar || '',
-    nivel: Number(p.nivel) || 1,
-    xp: Number(p.xp) || 0,
+    nombre: profile.nombre || row.username,
+    avatar: profile.avatar || '',
+    nivel: Number(profile.nivel) || 1,
+    xp: Number(profile.xp) || 0,
     correctas: correct,
     respondidas: answered
-  });
+  };
 }
 
 function rankingForCourse(course, users) {
   const ranking = [];
 
   for (const row of users) {
-    const p = parseProfile(row.profile_json);
+    const profile = parseProfile(row.profile_json);
+    const registros = Array.isArray(profile.registrosGeneral) ? profile.registrosGeneral : [];
     let correct = 0;
     let answered = 0;
 
-    const registros = Array.isArray(p.registrosGeneral) ? p.registrosGeneral : [];
-    for (const reg of registros) {
-      if (!courseMatches(reg?.cursoNivel, course) && !courseMatches(reg?.curso, course)) continue;
-      answered++;
-      const estado = normalizeCourse(reg?.estado);
-      if (estado === 'correcto' || reg?.correct === true || reg?.correcto === true) correct++;
-    }
+    // Preferimos registrosGeneral cuando contiene respuestas del curso para no contar dos veces
+    // los mismos ejercicios que también aparecen en progresoCursos.
+    const registrosCurso = registros.filter(reg =>
+      courseMatches(reg?.cursoNivel, course) || courseMatches(reg?.curso, course)
+    );
 
-    const progresoCursos = p.progresoCursos && typeof p.progresoCursos === 'object' ? p.progresoCursos : {};
-    for (const key of Object.keys(progresoCursos)) {
-      if (!courseMatches(key, course)) continue;
-      const item = progresoCursos[key] || {};
-      const resultados = Array.isArray(item.resultados) ? item.resultados : [];
-      const boolResults = resultados.filter(x => x === true || x === false);
-      if (boolResults.length) {
+    if (registrosCurso.length > 0) {
+      answered = registrosCurso.length;
+      correct = registrosCurso.filter(reg => {
+        const estado = normalizeCourse(reg?.estado);
+        return estado === 'correcto' || reg?.correct === true || reg?.correcto === true;
+      }).length;
+    } else {
+      const progresoCursos = profile.progresoCursos && typeof profile.progresoCursos === 'object'
+        ? profile.progresoCursos
+        : {};
+
+      for (const key of Object.keys(progresoCursos)) {
+        if (!courseMatches(key, course)) continue;
+        const item = progresoCursos[key] || {};
+        const resultados = Array.isArray(item.resultados) ? item.resultados : [];
+        const boolResults = resultados.filter(x => x === true || x === false);
         answered += boolResults.length;
         correct += boolResults.filter(x => x === true).length;
       }
     }
 
-    addResult(ranking, row, p, correct, answered);
+    ranking.push(buildRankingEntry(row, profile, correct, answered));
   }
 
   ranking.sort((a, b) =>
@@ -259,9 +304,21 @@ app.get('/api/rankings', async (req, res) => {
 
 app.get('/api/admin/users', async (req, res) => {
   try {
-    if (String(req.headers['x-admin-key'] || '') !== ADMIN_KEY) return res.status(403).json({ error: 'No autorizado.' });
-    const { rows } = await pool.query('SELECT id, username, profile_json, created_at, updated_at FROM users ORDER BY updated_at DESC');
-    res.json({ users: rows.map(r => ({ id:r.id, username:r.username, profile:parseProfile(r.profile_json), created_at:r.created_at, updated_at:r.updated_at })) });
+    if (String(req.headers['x-admin-key'] || '') !== ADMIN_KEY) {
+      return res.status(403).json({ error: 'No autorizado.' });
+    }
+    const { rows } = await pool.query(
+      'SELECT id, username, profile_json, created_at, updated_at FROM users ORDER BY updated_at DESC'
+    );
+    res.json({
+      users: rows.map(r => ({
+        id: r.id,
+        username: r.username,
+        profile: parseProfile(r.profile_json),
+        created_at: r.created_at,
+        updated_at: r.updated_at
+      }))
+    });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: 'No se pudo cargar la lista de usuarios.' });
