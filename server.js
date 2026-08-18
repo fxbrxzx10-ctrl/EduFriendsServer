@@ -218,7 +218,60 @@ function courseMatches(value, course) {
   const a = normalizeCourse(value);
   const b = normalizeCourse(course);
   if (!a || !b) return false;
-  return a === b || a.startsWith(b + ' (') || a.startsWith(b + '|') || a.startsWith(b + ' -') || a.startsWith(b + ' —');
+  return a === b ||
+    a.startsWith(b + ' (') ||
+    a.startsWith(b + '|') ||
+    a.startsWith(b + ' -') ||
+    a.startsWith(b + ' —');
+}
+
+function resultValue(result) {
+  if (result === true) return true;
+  if (result === false) return false;
+  if (!result || typeof result !== 'object') return null;
+
+  if (result.correct === true || result.correcto === true || result.esCorrecta === true) return true;
+  if (result.correct === false || result.correcto === false || result.esCorrecta === false) return false;
+
+  const estado = normalizeCourse(result.estado || result.resultado || '');
+  if (estado === 'correcto' || estado === 'correcta') return true;
+  if (estado === 'incorrecto' || estado === 'incorrecta' || estado === 'fallo' || estado === 'fallida') return false;
+
+  return null;
+}
+
+function countProgressItem(item) {
+  if (!item || typeof item !== 'object') return { correct: 0, answered: 0 };
+
+  const arrays = [
+    item.resultados,
+    item.respuestas,
+    item.answers,
+    item.historial
+  ].filter(Array.isArray);
+
+  let correct = 0;
+  let answered = 0;
+  let foundArray = false;
+
+  for (const arr of arrays) {
+    if (foundArray) break;
+    const values = arr.map(resultValue).filter(v => v === true || v === false);
+    if (values.length > 0) {
+      foundArray = true;
+      answered = values.length;
+      correct = values.filter(v => v === true).length;
+    }
+  }
+
+  if (!foundArray) {
+    const numericAnswered = Number(item.respondidas ?? item.respondidasTotal ?? item.preguntasRespondidas);
+    const numericCorrect = Number(item.correctas ?? item.correctasTotal ?? item.preguntasCorrectas);
+    if (Number.isFinite(numericAnswered) && numericAnswered > 0) answered = numericAnswered;
+    if (Number.isFinite(numericCorrect) && numericCorrect >= 0) correct = Math.min(numericCorrect, answered);
+  }
+
+  return { correct, answered };
 }
 
 function buildRankingEntry(row, profile, correct, answered) {
@@ -239,35 +292,41 @@ function rankingForCourse(course, users) {
   for (const row of users) {
     const profile = parseProfile(row.profile_json);
     const registros = Array.isArray(profile.registrosGeneral) ? profile.registrosGeneral : [];
+
     let correct = 0;
     let answered = 0;
 
-    // Preferimos registrosGeneral cuando contiene respuestas del curso para no contar dos veces
-    // los mismos ejercicios que también aparecen en progresoCursos.
+    // 1) Usamos los registros explícitos del curso cuando existen.
+    // Esto evita duplicar las mismas preguntas que también estén en progresoCursos.
     const registrosCurso = registros.filter(reg =>
-      courseMatches(reg?.cursoNivel, course) || courseMatches(reg?.curso, course)
+      courseMatches(reg?.cursoNivel, course) ||
+      courseMatches(reg?.curso, course) ||
+      courseMatches(reg?.cursoNombre, course)
     );
 
     if (registrosCurso.length > 0) {
       answered = registrosCurso.length;
-      correct = registrosCurso.filter(reg => {
-        const estado = normalizeCourse(reg?.estado);
-        return estado === 'correcto' || reg?.correct === true || reg?.correcto === true;
-      }).length;
+      correct = registrosCurso.reduce((total, reg) => {
+        return total + (resultValue(reg) === true ? 1 : 0);
+      }, 0);
     } else {
+      // 2) Si no hay registrosGeneral para ese curso, usamos progresoCursos.
+      // Se aceptan claves como "Comunicación|facil" o "Comunicación (Básico)".
       const progresoCursos = profile.progresoCursos && typeof profile.progresoCursos === 'object'
         ? profile.progresoCursos
         : {};
 
       for (const key of Object.keys(progresoCursos)) {
         if (!courseMatches(key, course)) continue;
-        const item = progresoCursos[key] || {};
-        const resultados = Array.isArray(item.resultados) ? item.resultados : [];
-        const boolResults = resultados.filter(x => x === true || x === false);
-        answered += boolResults.length;
-        correct += boolResults.filter(x => x === true).length;
+        const stats = countProgressItem(progresoCursos[key]);
+        answered += stats.answered;
+        correct += stats.correct;
       }
     }
+
+    // IMPORTANTE: un usuario sin respuestas en este curso NO pertenece al ranking.
+    // Esto elimina los usuarios fantasma que aparecían con 0 correctas.
+    if (answered <= 0) continue;
 
     ranking.push(buildRankingEntry(row, profile, correct, answered));
   }
