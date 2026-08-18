@@ -264,6 +264,8 @@ function countProgressItem(item) {
     }
   }
 
+  // Estos contadores solo se aceptan como respaldo cuando no hay un historial
+  // explícito de respuestas. Así no convertimos datos de interfaz en respuestas ficticias.
   if (!foundArray) {
     const numericAnswered = Number(item.respondidas ?? item.respondidasTotal ?? item.preguntasRespondidas);
     const numericCorrect = Number(item.correctas ?? item.correctasTotal ?? item.preguntasCorrectas);
@@ -296,13 +298,16 @@ function rankingForCourse(course, users) {
     let correct = 0;
     let answered = 0;
 
-    // 1) Usamos los registros explícitos del curso cuando existen.
-    // Esto evita duplicar las mismas preguntas que también estén en progresoCursos.
-    const registrosCurso = registros.filter(reg =>
-      courseMatches(reg?.cursoNivel, course) ||
-      courseMatches(reg?.curso, course) ||
-      courseMatches(reg?.cursoNombre, course)
-    );
+    // Los registrosGeneral solo cuentan si realmente contienen un resultado
+    // Correcto/Incorrecto. Tener un registro sin resultado no significa haber
+    // respondido una pregunta.
+    const registrosCurso = registros
+      .filter(reg =>
+        courseMatches(reg?.cursoNivel, course) ||
+        courseMatches(reg?.curso, course) ||
+        courseMatches(reg?.cursoNombre, course)
+      )
+      .filter(reg => resultValue(reg) === true || resultValue(reg) === false);
 
     if (registrosCurso.length > 0) {
       answered = registrosCurso.length;
@@ -310,8 +315,7 @@ function rankingForCourse(course, users) {
         return total + (resultValue(reg) === true ? 1 : 0);
       }, 0);
     } else {
-      // 2) Si no hay registrosGeneral para ese curso, usamos progresoCursos.
-      // Se aceptan claves como "Comunicación|facil" o "Comunicación (Básico)".
+      // Si no hay respuestas explícitas en registrosGeneral, usamos progresoCursos.
       const progresoCursos = profile.progresoCursos && typeof profile.progresoCursos === 'object'
         ? profile.progresoCursos
         : {};
@@ -324,9 +328,9 @@ function rankingForCourse(course, users) {
       }
     }
 
-    // IMPORTANTE: un usuario sin respuestas en este curso NO pertenece al ranking.
-    // Esto elimina los usuarios fantasma que aparecían con 0 correctas.
-    if (answered <= 0) continue;
+    // SOLO entran al ranking los usuarios que realmente respondieron al menos
+    // una pregunta del curso seleccionado.
+    if (answered < 1) continue;
 
     ranking.push(buildRankingEntry(row, profile, correct, answered));
   }
