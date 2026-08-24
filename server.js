@@ -43,6 +43,24 @@ function countProgressItem(item){if(!item||typeof item!=='object')return{correct
 function buildRankingEntry(row,p,c,a){return{username:row.username,nombre:p.nombre||row.username,avatar:p.avatar||'',nivel:Number(p.nivel)||1,xp:Number(p.xp)||0,correctas:c,respondidas:a}}
 function rankingForCourse(course,users){const ranking=[];for(const row of users){const p=parseProfile(row.profile_json);const progreso=p.progresoCursos&&typeof p.progresoCursos==='object'?p.progresoCursos:{};let progressAnswered=0,progressCorrect=0,hasCourseProgress=false;for(const key of Object.keys(progreso)){if(!courseMatches(key,course))continue;const s=countProgressItem(progreso[key]);if(s.answered>0){hasCourseProgress=true;progressAnswered+=s.answered;progressCorrect+=s.correct}}let correct=progressCorrect,answered=progressAnswered;if(!hasCourseProgress){const registros=Array.isArray(p.registrosGeneral)?p.registrosGeneral:[];const regs=registros.filter(r=>(courseMatches(r?.cursoNivel,course)||courseMatches(r?.curso,course)||courseMatches(r?.cursoNombre,course))&&(resultValue(r)===true||resultValue(r)===false));answered=regs.length;correct=regs.reduce((n,r)=>n+(resultValue(r)===true?1:0),0)}if(answered<1)continue;ranking.push(buildRankingEntry(row,p,correct,answered))}ranking.sort((a,b)=>b.correctas-a.correctas||b.respondidas-a.respondidas||b.xp-a.xp||a.username.localeCompare(b.username));return ranking.slice(0,50).map((x,i)=>({posicion:i+1,...x}))}
 app.get('/api/rankings',async(req,res)=>{try{const course=cleanUsername(req.query.course);if(!course)return res.status(400).json({error:'Falta course.'});const {rows}=await pool.query('SELECT username,profile_json FROM users');const ranking=rankingForCourse(course,rows);res.set('Cache-Control','no-store');res.json({ok:true,course,totalUsuarios:ranking.length,ranking})}catch(e){console.error(e);res.status(500).json({error:'No se pudo cargar el ranking.'})}});
+app.post('/api/admin/limpiar-todo', async (req, res) => {
+  try {
+    if (String(req.headers['x-admin-key'] || '') !== ADMIN_KEY) {
+      return res.status(403).json({ error: 'No autorizado.' });
+    }
+
+    const result = await pool.query('DELETE FROM users');
+
+    res.json({
+      ok: true,
+      mensaje: 'Todas las cuentas y sus progresos fueron eliminados.',
+      eliminados: result.rowCount
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'No se pudieron eliminar las cuentas.' });
+  }
+});
 app.get('/api/admin/users',async(req,res)=>{try{if(String(req.headers['x-admin-key']||'')!==ADMIN_KEY)return res.status(403).json({error:'No autorizado.'});const {rows}=await pool.query('SELECT id,username,profile_json,created_at,updated_at FROM users ORDER BY updated_at DESC');res.json({users:rows.map(r=>({id:r.id,username:r.username,profile:parseProfile(r.profile_json),created_at:r.created_at,updated_at:r.updated_at}))})}catch(e){console.error(e);res.status(500).json({error:'No se pudo cargar la lista de usuarios.'})}});
 app.use((err,_req,res,_next)=>{console.error(err);res.status(500).json({error:'Error interno del servidor.'})});
 await initDb();app.listen(PORT,'0.0.0.0',()=>console.log(`EduFriends server listening on 0.0.0.0:${PORT}`));
