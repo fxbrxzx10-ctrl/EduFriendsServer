@@ -25,6 +25,8 @@ app.use('/admin',express.static(new URL('./public',import.meta.url).pathname));
 app.get('/',(_req,res)=>res.sendFile(new URL('./index.html',import.meta.url).pathname));
 app.get('/downloads/free',(_req,res)=>res.download(new URL('./Proyecto_CyE.apk',import.meta.url).pathname,'EduFriends-Free.apk'));
 app.get('/downloads/premium',(_req,res)=>res.download(new URL('./EduFriends.apk',import.meta.url).pathname,'EduFriends-Premium.apk'));
+app.get('/Proyecto_CyE.apk',(_req,res)=>res.download(new URL('./Proyecto_CyE.apk',import.meta.url).pathname,'EduFriends-Free.apk'));
+app.get('/EduFriends.apk',(_req,res)=>res.download(new URL('./EduFriends.apk',import.meta.url).pathname,'EduFriends-Premium.apk'));
 function cleanUsername(v){return String(v??'').trim().replace(/\s+/g,' ')}
 function validUsername(v){return /^[A-Za-zÁÉÍÓÚáéíóúÑñ0-9_. -]{3,30}$/.test(v)}
 function validPassword(v){return typeof v==='string'&&v.length>=6&&v.length<=100}
